@@ -1,0 +1,249 @@
+diff --git a/app/routers/slack.py b/app/routers/slack.py
+index b9a7950..6591c34 100644
+--- a/app/routers/slack.py
++++ b/app/routers/slack.py
+@@ -103,7 +103,7 @@ async def process_slack_event(event_data: Dict[str, Any], settings: Settings) ->
+                 return
+ 
+             # Relay the summarized message back to the WhatsApp user
+-            send_wa_text(
++            await send_wa_text(
+                 to=ticket.wa_number,
+                 body=whatsapp_message,
+                 settings=settings,
+diff --git a/app/routers/wa.py b/app/routers/wa.py
+index 33fb42f..1681c9c 100644
+--- a/app/routers/wa.py
++++ b/app/routers/wa.py
+@@ -124,7 +124,7 @@ async def process_whatsapp_message(
+                 )
+ 
+             # Send clarification question back to customer on WhatsApp and STOP
+-            send_wa_text(to=wa_number, body=clarification_question, settings=settings)
++            await send_wa_text(to=wa_number, body=clarification_question, settings=settings)
+             print(f"-------------------------------------------------------\n")
+             return
+ 
+@@ -149,7 +149,7 @@ async def process_whatsapp_message(
+ 
+         # 6. Send WhatsApp confirmation message with title to customer
+         confirmation_msg = f"Your support request has been received: \"{extraction.title}\". Our team is on it!"
+-        send_wa_text(to=wa_number, body=confirmation_msg, settings=settings)
++        await send_wa_text(to=wa_number, body=confirmation_msg, settings=settings)
+ 
+         print(f"[WA-SLACK-BRIDGE] Posted to Slack {channel_id} (ts: {slack_ts})")
+         print(f"-------------------------------------------------------\n")
+@@ -209,7 +209,10 @@ async def receive_whatsapp_webhook(
+     )
+ 
+     # Process message: extract ticket metadata, handle clarification, post to Slack
+-    await process_whatsapp_message(
++    # Runs in background so Twilio gets an immediate 200 instead of waiting on
++    # the full LLM + Slack + outbound-WA chain.
++    background_tasks.add_task(
++        process_whatsapp_message,
+         ticket_id=ticket.id,
+         wa_number=wa_from,
+         wa_message_sid=message_sid,
+diff --git a/app/services/twilio_wa.py b/app/services/twilio_wa.py
+deleted file mode 100644
+index 529798b..0000000
+--- a/app/services/twilio_wa.py
++++ /dev/null
+@@ -1,49 +0,0 @@
+-import logging
+-from typing import Optional
+-import httpx
+-
+-from app.config import Settings, get_settings
+-
+-logger = logging.getLogger(__name__)
+-
+-
+-async def send_wa_text(
+-    to_number: str,
+-    body: str,
+-    settings: Optional[Settings] = None,
+-) -> bool:
+-    """Send an outbound WhatsApp message to customer via Twilio REST API.
+-    
+-    If Twilio credentials are not configured, logs the message and returns True.
+-    """
+-    if settings is None:
+-        settings = get_settings()
+-
+-    if not body or not body.strip():
+-        return False
+-
+-    print(f"[WA-SLACK-BRIDGE] Sending WhatsApp to {to_number}: \"{body}\"")
+-
+-    if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
+-        try:
+-            url = f"https://api.twilio.com/2010-04-01/Accounts/{settings.TWILIO_ACCOUNT_SID}/Messages.json"
+-            auth = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+-            data = {
+-                "From": settings.TWILIO_WHATSAPP_NUMBER,
+-                "To": to_number,
+-                "Body": body,
+-            }
+-            async with httpx.AsyncClient() as client:
+-                response = await client.post(url, data=data, auth=auth, timeout=10.0)
+-                if response.status_code in (200, 201):
+-                    logger.info("WhatsApp message sent successfully to %s", to_number)
+-                    return True
+-                else:
+-                    logger.error("Twilio API returned error %d: %s", response.status_code, response.text)
+-                    return False
+-        except Exception as exc:
+-            logger.exception("Failed to send WhatsApp message via Twilio: %s", exc)
+-            return False
+-
+-    logger.info("Simulated outbound WhatsApp message to %s: %s", to_number, body)
+-    return True
+diff --git a/app/services/wa_send.py b/app/services/wa_send.py
+index bb8f23b..426b32f 100644
+--- a/app/services/wa_send.py
++++ b/app/services/wa_send.py
+@@ -1,15 +1,15 @@
+ import logging
+ from typing import Optional
+-from twilio.rest import Client
++import httpx
+ 
+ from app.config import Settings, get_settings
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
+-def send_wa_text(to: str, body: str, settings: Optional[Settings] = None) -> None:
+-    """Send an outbound WhatsApp message using Twilio REST Client.
+-    
++async def send_wa_text(to: str, body: str, settings: Optional[Settings] = None) -> None:
++    """Send an outbound WhatsApp message via Twilio's REST API (async, non-blocking).
++
+     `to` format: 'whatsapp:+<countrycode><number>'
+     """
+     if settings is None:
+@@ -27,17 +27,28 @@ def send_wa_text(to: str, body: str, settings: Optional[Settings] = None) -> Non
+     print(f"[WA-SLACK-BRIDGE] Sending WhatsApp to {target_to}: \"{body}\"")
+ 
+     if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
++        url = f"https://api.twilio.com/2010-04-01/Accounts/{settings.TWILIO_ACCOUNT_SID}/Messages.json"
++        auth = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
++        data = {
++            "From": settings.TWILIO_WHATSAPP_NUMBER,
++            "To": target_to,
++            "Body": body,
++        }
+         try:
+-            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+-            message = client.messages.create(
+-                from_=settings.TWILIO_WHATSAPP_NUMBER,
+-                to=target_to,
+-                body=body,
+-            )
+-            logger.info("Twilio WhatsApp message sent to %s (SID: %s)", target_to, message.sid)
+-            return
+-        except Exception as exc:
+-            logger.exception("Failed to send WhatsApp message via Twilio Client to %s: %s", target_to, exc)
++            async with httpx.AsyncClient() as client:
++                response = await client.post(url, data=data, auth=auth, timeout=10.0)
++                if response.status_code in (200, 201):
++                    logger.info("Twilio WhatsApp message sent to %s", target_to)
++                    return
++                logger.error(
++                    "Twilio API returned error %d for %s: %s",
++                    response.status_code, target_to, response.text,
++                )
++                if not settings.DEBUG:
++                    raise RuntimeError(f"Twilio send failed ({response.status_code}): {response.text}")
++                return
++        except httpx.HTTPError as exc:
++            logger.exception("Failed to send WhatsApp message via Twilio to %s: %s", target_to, exc)
+             if not settings.DEBUG:
+                 raise
+             return
+diff --git a/pytest.ini b/pytest.ini
+new file mode 100644
+index 0000000..2f4c80e
+--- /dev/null
++++ b/pytest.ini
+@@ -0,0 +1,2 @@
++[pytest]
++asyncio_mode = auto
+diff --git a/requirements.txt b/requirements.txt
+index 37f969f..a18d89e 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -5,7 +5,8 @@ httpx>=0.27.0
+ twilio>=9.3.0
+ groq>=0.11.0
+ slack_sdk>=3.32.0
+-tenacity>=9.0.0
+ python-dotenv>=1.0.1
+ pydantic-settings>=2.5.0
+ python-multipart>=0.0.9
++pytest>=8.3.0
++pytest-asyncio>=0.24.0
+diff --git a/tests/test_slack_ticket.py b/tests/test_slack_ticket.py
+index 17176b4..20903ae 100644
+--- a/tests/test_slack_ticket.py
++++ b/tests/test_slack_ticket.py
+@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
+ 
+ from app.models import TicketExtraction
+ from app.services.slack_ticket import create_slack_ticket
+-from app.services.twilio_wa import send_wa_text
+ 
+ 
+ @pytest.mark.asyncio
+@@ -69,25 +68,31 @@ async def test_create_slack_ticket_mock_fallback():
+         assert ts is not None
+ 
+ 
++from app.config import Settings
+ from app.services.wa_send import send_wa_text
+ 
+ 
+-def test_send_wa_text():
++@pytest.mark.asyncio
++async def test_send_wa_text():
+     """Test send_wa_text helper function from app.services.wa_send."""
+-    # Blank body should do nothing safely
+-    send_wa_text("whatsapp:+1234567890", "")
+-
+-    # Mock successful twilio client call
+-    mock_messages = MagicMock()
+-    mock_messages.create = MagicMock(return_value=MagicMock(sid="SM_MOCK_123"))
+-
+-    with patch("app.services.wa_send.Client") as mock_twilio_class:
+-        mock_instance = MagicMock()
+-        mock_instance.messages = mock_messages
+-        mock_twilio_class.return_value = mock_instance
+-
+-        send_wa_text("whatsapp:+1234567890", "Hello there!")
+-        assert mock_instance.messages.create.called
+-        call_kwargs = mock_instance.messages.create.call_args[1]
+-        assert call_kwargs["to"] == "whatsapp:+1234567890"
+-        assert call_kwargs["body"] == "Hello there!"
++    test_settings = Settings(
++        TWILIO_ACCOUNT_SID="ACtest123",
++        TWILIO_AUTH_TOKEN="test_auth_token",
++        TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
++    )
++
++    # Blank body should do nothing safely, no network call
++    await send_wa_text("whatsapp:+1234567890", "", settings=test_settings)
++
++    # Mock successful Twilio API response
++    mock_response = MagicMock()
++    mock_response.status_code = 201
++    mock_response.text = ""
++
++    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)) as mock_post:
++        await send_wa_text("whatsapp:+1234567890", "Hello there!", settings=test_settings)
++
++        assert mock_post.called
++        call_kwargs = mock_post.call_args[1]
++        assert call_kwargs["data"]["To"] == "whatsapp:+1234567890"
++        assert call_kwargs["data"]["Body"] == "Hello there!"

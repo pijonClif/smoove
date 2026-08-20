@@ -124,7 +124,7 @@ async def process_whatsapp_message(
                 )
 
             # Send clarification question back to customer on WhatsApp and STOP
-            send_wa_text(to=wa_number, body=clarification_question, settings=settings)
+            await send_wa_text(to=wa_number, body=clarification_question, settings=settings)
             print(f"-------------------------------------------------------\n")
             return
 
@@ -149,7 +149,7 @@ async def process_whatsapp_message(
 
         # 6. Send WhatsApp confirmation message with title to customer
         confirmation_msg = f"Your support request has been received: \"{extraction.title}\". Our team is on it!"
-        send_wa_text(to=wa_number, body=confirmation_msg, settings=settings)
+        await send_wa_text(to=wa_number, body=confirmation_msg, settings=settings)
 
         print(f"[WA-SLACK-BRIDGE] Posted to Slack {channel_id} (ts: {slack_ts})")
         print(f"-------------------------------------------------------\n")
@@ -209,7 +209,10 @@ async def receive_whatsapp_webhook(
     )
 
     # Process message: extract ticket metadata, handle clarification, post to Slack
-    await process_whatsapp_message(
+    # Runs in background so Twilio gets an immediate 200 instead of waiting on
+    # the full LLM + Slack + outbound-WA chain.
+    background_tasks.add_task(
+        process_whatsapp_message,
         ticket_id=ticket.id,
         wa_number=wa_from,
         wa_message_sid=message_sid,

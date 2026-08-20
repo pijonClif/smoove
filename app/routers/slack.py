@@ -103,7 +103,7 @@ async def process_slack_event(event_data: Dict[str, Any], settings: Settings) ->
                 return
 
             # Relay the summarized message back to the WhatsApp user
-            send_wa_text(
+            await send_wa_text(
                 to=ticket.wa_number,
                 body=whatsapp_message,
                 settings=settings,

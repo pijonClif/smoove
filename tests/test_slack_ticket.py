@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models import TicketExtraction
 from app.services.slack_ticket import create_slack_ticket
-from app.services.twilio_wa import send_wa_text
 
 
 @pytest.mark.asyncio
@@ -69,25 +68,31 @@ async def test_create_slack_ticket_mock_fallback():
         assert ts is not None
 
 
+from app.config import Settings
 from app.services.wa_send import send_wa_text
 
 
-def test_send_wa_text():
+@pytest.mark.asyncio
+async def test_send_wa_text():
     """Test send_wa_text helper function from app.services.wa_send."""
-    # Blank body should do nothing safely
-    send_wa_text("whatsapp:+1234567890", "")
+    test_settings = Settings(
+        TWILIO_ACCOUNT_SID="ACtest123",
+        TWILIO_AUTH_TOKEN="test_auth_token",
+        TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
+    )
 
-    # Mock successful twilio client call
-    mock_messages = MagicMock()
-    mock_messages.create = MagicMock(return_value=MagicMock(sid="SM_MOCK_123"))
+    # Blank body should do nothing safely, no network call
+    await send_wa_text("whatsapp:+1234567890", "", settings=test_settings)
 
-    with patch("app.services.wa_send.Client") as mock_twilio_class:
-        mock_instance = MagicMock()
-        mock_instance.messages = mock_messages
-        mock_twilio_class.return_value = mock_instance
+    # Mock successful Twilio API response
+    mock_response = MagicMock()
+    mock_response.status_code = 201
+    mock_response.text = ""
 
-        send_wa_text("whatsapp:+1234567890", "Hello there!")
-        assert mock_instance.messages.create.called
-        call_kwargs = mock_instance.messages.create.call_args[1]
-        assert call_kwargs["to"] == "whatsapp:+1234567890"
-        assert call_kwargs["body"] == "Hello there!"
+    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)) as mock_post:
+        await send_wa_text("whatsapp:+1234567890", "Hello there!", settings=test_settings)
+
+        assert mock_post.called
+        call_kwargs = mock_post.call_args[1]
+        assert call_kwargs["data"]["To"] == "whatsapp:+1234567890"
+        assert call_kwargs["data"]["Body"] == "Hello there!"
