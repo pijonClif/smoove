@@ -81,13 +81,9 @@ async def process_whatsapp_message(
     body: str,
     settings: Settings,
 ) -> None:
-    """Background task to extract ticket metadata, handle clarification, post to Slack, and reply to user."""
-    print(f"\n-------------------------------------------------------")
-    print(f"[WA-SLACK-BRIDGE] Inbound WhatsApp from {wa_number}")
-    print(f"  Message: \"{body}\" (SID: {wa_message_sid})")
+    logger.info("Inbound WhatsApp from %s: %r (SID: %s)", wa_number, body, wa_message_sid)
 
     try:
-        # 1. Fetch user's prior ticket history from tickets.db
         history_text = "No prior tickets found."
         with get_db_session() as session:
             prior_tickets = get_ticket_history(
@@ -97,26 +93,20 @@ async def process_whatsapp_message(
                 limit=5,
             )
             history_text = format_ticket_history(prior_tickets)
-            print(f"[WA-SLACK-BRIDGE] Found {len(prior_tickets)} prior tickets in tickets.db for context")
-            if prior_tickets:
-                for pt in prior_tickets:
-                    print(f"  - #{pt.id} [{pt.status.upper()}]: \"{pt.title}\"")
+            logger.info("Found %d prior tickets for context", len(prior_tickets))
 
-        # 2. Extract structured ticket information via Groq LLM with tickets.db context
+        # groq call, ~1-2s typically
         extraction = await extract_ticket(raw_text=body, ticket_history=history_text)
-        print(f"[WA-SLACK-BRIDGE] LLM Extracted:")
-        print(f"  Title: \"{extraction.title}\" | Priority: {extraction.priority} | Category: {extraction.category}")
-        if extraction.is_followup:
-            print(f"  [Follow-up] Linked to Ticket #{extraction.related_ticket_id}")
+        logger.info(
+            "Extracted: title=%r priority=%s category=%s followup=%s",
+            extraction.title, extraction.priority, extraction.category, extraction.is_followup,
+        )
 
-        # 3. Handle Clarification Flow
         if extraction.needs_clarification:
             clarification_question = (
                 extraction.clarification_question
                 or "Could you please provide more details about your request so we can assist you better?"
             )
-            print(f"  [Needs Clarification] Question: \"{clarification_question}\"")
-            print(f"[WA-SLACK-BRIDGE] Sending clarification to user and stopping.")
 
             with get_db_session() as session:
                 update_ticket_details(
@@ -129,19 +119,15 @@ async def process_whatsapp_message(
                     status="needs_clarification",
                 )
 
-            # Send clarification question back to customer on WhatsApp and STOP
             await send_wa_text(to=wa_number, body=clarification_question, settings=settings)
-            print(f"-------------------------------------------------------\n")
             return
 
-        # 4. Standard Support Ticket Flow: Create Slack Ticket
         channel_id, slack_ts = await create_slack_ticket(
             ticket=extraction,
             wa_number=wa_number,
             settings=settings,
         )
 
-        # 5. Update SQLite database record with status='open', title, channel, ts
         with get_db_session() as session:
             ticket = update_ticket_details(
                 session=session,
@@ -154,18 +140,13 @@ async def process_whatsapp_message(
                 slack_ts=slack_ts,
                 status="open",
             )
-            print(f"[WA-SLACK-BRIDGE] DB Ticket #{ticket_id} updated -> status: open | channel: {channel_id} | ts: {slack_ts}")
 
-        # 6. Send WhatsApp confirmation message with title to customer
         confirmation_msg = f"Your support request has been received: \"{extraction.title}\". Our team is on it!"
         await send_wa_text(to=wa_number, body=confirmation_msg, settings=settings)
-
-        print(f"[WA-SLACK-BRIDGE] Posted to Slack {channel_id} (ts: {slack_ts})")
-        print(f"-------------------------------------------------------\n")
+        logger.info("Ticket #%s posted to Slack channel %s (ts %s)", ticket_id, channel_id, slack_ts)
 
     except Exception as exc:
         logger.exception("Error processing background WhatsApp message %s: %s", wa_message_sid, exc)
-        print(f"[WA-SLACK-BRIDGE] Error: {exc}")
         try:
             with get_db_session() as session:
                 update_ticket_details(session=session, ticket_id=ticket_id, status="error")

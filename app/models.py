@@ -28,8 +28,7 @@ class Ticket(SQLModel, table=True):
 
 
 class SlackEvent(SQLModel, table=True):
-    """Tracks processed Slack event_ids for webhook retry deduplication."""
-
+    # slack retries webhook deliveries, this is just for dedup
     __tablename__ = "slack_events"
 
     id: Optional[int] = Field(default=None, primary_key=True)

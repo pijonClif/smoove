@@ -10,6 +10,8 @@ from sqlmodel import Session, select
 from app.config import Settings, get_settings
 from app.db import get_db_session, get_session, mark_slack_event_processed
 from app.models import Ticket
+from app.services.llm import summarize_update
+from app.services.wa_send import send_wa_text
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +45,6 @@ def verify_slack_signature(
     )
 
     return hmac.compare_digest(my_signature, signature)
-
-
-from app.services.llm import summarize_update
-from app.services.wa_send import send_wa_text
 
 
 async def process_slack_event(event_data: Dict[str, Any], settings: Settings) -> None:

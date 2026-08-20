@@ -22,7 +22,6 @@ logger = logging.getLogger("wa-slack-bridge")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Lifespan context manager to handle startup and shutdown tasks."""
     logger.info("Initializing SQLite database tables...")
     init_db()
     logger.info("wa-slack-bridge service started successfully.")
@@ -40,14 +39,12 @@ app = FastAPI(
     debug=settings.DEBUG,
 )
 
-# Register Webhook Routers
 app.include_router(wa.router)
 app.include_router(slack.router)
 
 
 @app.get("/health", response_class=JSONResponse, tags=["health"])
 async def health_check() -> Dict[str, str]:
-    """Health check endpoint."""
     return {
         "status": "healthy",
         "service": "wa-slack-bridge",
@@ -57,7 +54,7 @@ async def health_check() -> Dict[str, str]:
 
 @app.get("/", response_class=JSONResponse, tags=["root"])
 async def root() -> Dict[str, Any]:
-    """Root metadata endpoint."""
+    # just so it's not a bare 404 if someone hits the root url
     return {
         "message": "wa-slack-bridge is running",
         "docs_url": "/docs",

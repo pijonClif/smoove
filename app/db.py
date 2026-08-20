@@ -20,14 +20,12 @@ def init_db() -> None:
 
 
 def get_session() -> Generator[Session, None, None]:
-    """FastAPI dependency for obtaining a database session."""
     with Session(engine) as session:
         yield session
 
 
 @contextmanager
 def get_db_session() -> Generator[Session, None, None]:
-    """Context manager for obtaining a database session in background tasks."""
     with Session(engine) as session:
         yield session
 
@@ -49,7 +47,6 @@ def get_ticket_by_message_sid(session: Session, message_sid: str) -> Optional[Ti
 
 
 def create_initial_ticket(session: Session, wa_number: str, wa_message_sid: str) -> Ticket:
-    """Create and persist an initial ticket record."""
     ticket = Ticket(
         wa_number=wa_number,
         wa_message_sid=wa_message_sid,

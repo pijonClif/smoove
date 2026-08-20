@@ -46,6 +46,13 @@ DEFAULT_CLARIFICATION_FALLBACK = TicketExtraction(
 )
 
 
+def _fallback_extraction(raw_text: str) -> TicketExtraction:
+    fallback = DEFAULT_CLARIFICATION_FALLBACK.model_copy()
+    if raw_text.strip():
+        fallback.description = raw_text.strip()
+    return fallback
+
+
 def _get_groq_client() -> Optional[AsyncGroq]:
     """Retrieve an AsyncGroq client if API key is configured."""
     settings = get_settings()
@@ -64,10 +71,7 @@ async def extract_ticket(raw_text: str, ticket_history: Optional[str] = None) ->
     client = _get_groq_client()
     if not client:
         logger.warning("No Groq client available; using default fallback ticket extraction.")
-        fallback = DEFAULT_CLARIFICATION_FALLBACK.model_copy()
-        if raw_text.strip():
-            fallback.description = raw_text.strip()
-        return fallback
+        return _fallback_extraction(raw_text)
 
     models_to_try = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
     raw_response_content: Optional[str] = None
@@ -102,10 +106,7 @@ async def extract_ticket(raw_text: str, ticket_history: Optional[str] = None) ->
 
     if not raw_response_content:
         logger.error("All LLM models failed to return content for ticket extraction.")
-        fallback = DEFAULT_CLARIFICATION_FALLBACK.model_copy()
-        if raw_text.strip():
-            fallback.description = raw_text.strip()
-        return fallback
+        return _fallback_extraction(raw_text)
 
     # Parse into TicketExtraction; on json.loads/validation failure, return fallback
     try:
@@ -124,10 +125,8 @@ async def extract_ticket(raw_text: str, ticket_history: Optional[str] = None) ->
 
 
 async def summarize_update(slack_text: str, ticket_title: str) -> Optional[str]:
-    """Convert a Slack thread update into a short user-facing WhatsApp message using Groq.
-    
-    Uses 'openai/gpt-oss-120b'. If the response is 'SKIP' or indicates an internal note, returns None.
-    """
+    # uses openai/gpt-oss-120b on groq, returns None if it decides the update is
+    # internal-only (agent said SKIP)
     client = _get_groq_client()
     if not client:
         logger.warning("No Groq client available; skipping Slack update summarization.")
