@@ -39,8 +39,11 @@ async def verify_twilio_signature(request: Request, settings: Settings) -> dict[
         return params
 
     if not settings.TWILIO_AUTH_TOKEN:
-        logger.warning("TWILIO_AUTH_TOKEN is not configured; skipping signature check.")
-        return params
+        logger.error("Twilio webhook rejected: TWILIO_AUTH_TOKEN is not configured.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Server is not configured to verify Twilio signatures",
+        )
 
     signature = request.headers.get("X-Twilio-Signature")
     if not signature:
@@ -120,6 +123,9 @@ async def process_whatsapp_message(
                     session=session,
                     ticket_id=ticket_id,
                     title=extraction.title,
+                    description=extraction.description,
+                    priority=extraction.priority,
+                    category=extraction.category,
                     status="needs_clarification",
                 )
 
@@ -141,6 +147,9 @@ async def process_whatsapp_message(
                 session=session,
                 ticket_id=ticket_id,
                 title=extraction.title,
+                description=extraction.description,
+                priority=extraction.priority,
+                category=extraction.category,
                 slack_channel=channel_id,
                 slack_ts=slack_ts,
                 status="open",
@@ -157,6 +166,11 @@ async def process_whatsapp_message(
     except Exception as exc:
         logger.exception("Error processing background WhatsApp message %s: %s", wa_message_sid, exc)
         print(f"[WA-SLACK-BRIDGE] Error: {exc}")
+        try:
+            with get_db_session() as session:
+                update_ticket_details(session=session, ticket_id=ticket_id, status="error")
+        except Exception:
+            logger.exception("Failed to mark ticket %d as errored after processing failure.", ticket_id)
 
 
 # ---------------------------------------------------------------------------

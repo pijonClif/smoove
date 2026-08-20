@@ -20,8 +20,21 @@ class Ticket(SQLModel, table=True):
     slack_channel: Optional[str] = Field(default=None, description="Slack channel ID where ticket is posted")
     slack_ts: Optional[str] = Field(default=None, description="Slack message timestamp for thread replies")
     title: Optional[str] = Field(default=None, description="Extracted ticket title")
+    description: Optional[str] = Field(default=None, description="Extracted ticket description")
+    priority: Optional[str] = Field(default=None, description="Priority level: low, medium, high, urgent")
+    category: Optional[str] = Field(default=None, description="Category: billing, technical, access, other")
     status: str = Field(default="open", description="Ticket status: open, in_progress, resolved, closed")
     created_at: datetime = Field(default_factory=get_utc_now, description="UTC timestamp of creation")
+
+
+class SlackEvent(SQLModel, table=True):
+    """Tracks processed Slack event_ids for webhook retry deduplication."""
+
+    __tablename__ = "slack_events"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: str = Field(unique=True, index=True, description="Slack's event_id, unique per delivery attempt")
+    received_at: datetime = Field(default_factory=get_utc_now)
 
 
 class TicketExtraction(BaseModel):

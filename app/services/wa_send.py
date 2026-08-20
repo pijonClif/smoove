@@ -35,6 +35,7 @@ async def send_wa_text(to: str, body: str, settings: Optional[Settings] = None) 
             "Body": body,
         }
         try:
+            print(f"[DEBUG] FROM={settings.TWILIO_WHATSAPP_NUMBER} TO={target_to} SID={settings.TWILIO_ACCOUNT_SID}")
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, data=data, auth=auth, timeout=10.0)
                 if response.status_code in (200, 201):

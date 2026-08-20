@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from sqlmodel import Session, select
 
 from app.config import Settings, get_settings
-from app.db import get_db_session, get_session
+from app.db import get_db_session, get_session, mark_slack_event_processed
 from app.models import Ticket
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,15 @@ async def receive_slack_webhook(
     body_bytes = await request.body()
 
     # Signature verification
-    if not settings.DEBUG and settings.SLACK_SIGNING_SECRET:
+    if settings.DEBUG:
+        logger.debug("DEBUG mode enabled: skipping Slack signature validation.")
+    else:
+        if not settings.SLACK_SIGNING_SECRET:
+            logger.error("Slack webhook rejected: SLACK_SIGNING_SECRET is not configured.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Server is not configured to verify Slack signatures",
+            )
         timestamp = request.headers.get("X-Slack-Request-Timestamp")
         signature = request.headers.get("X-Slack-Signature")
         if not verify_slack_signature(body_bytes, timestamp, signature, settings.SLACK_SIGNING_SECRET):
@@ -140,8 +148,6 @@ async def receive_slack_webhook(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid Slack signature",
             )
-    elif settings.DEBUG:
-        logger.debug("DEBUG mode enabled: skipping Slack signature validation.")
 
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
@@ -159,6 +165,16 @@ async def receive_slack_webhook(
 
     # 2. Slack Event Callback
     if payload.get("type") == "event_callback":
+        event_id = payload.get("event_id")
+        if event_id:
+            with get_db_session() as session:
+                is_new = mark_slack_event_processed(session, event_id=event_id)
+            if not is_new:
+                logger.info("Duplicate Slack event_id received (%s) -> skipping.", event_id)
+                return {"status": "ok"}
+        else:
+            logger.warning("Slack event_callback missing event_id; cannot dedupe.")
+
         background_tasks.add_task(
             process_slack_event,
             event_data=payload,

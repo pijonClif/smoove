@@ -82,6 +82,9 @@ def test_whatsapp_webhook_flow():
             assert ticket.wa_number == "whatsapp:+1234567890"
             assert ticket.status == "open"
             assert ticket.title is not None
+            assert ticket.description == "Billing statement has an incorrect charge."
+            assert ticket.priority == "medium"
+            assert ticket.category == "billing"
             assert ticket.slack_channel is not None
             assert ticket.slack_ts is not None
 
@@ -219,3 +222,107 @@ def test_slack_signature_verification_enforced():
 
     # Reset debug mode
     settings.DEBUG = True
+
+
+def test_twilio_signature_check_fails_closed_when_unconfigured():
+    """If TWILIO_AUTH_TOKEN is unset outside DEBUG, requests must be rejected, not passed through."""
+    settings = get_settings()
+    settings.DEBUG = False
+    original_token = settings.TWILIO_AUTH_TOKEN
+    settings.TWILIO_AUTH_TOKEN = ""
+
+    with TestClient(app) as client:
+        form_data = {
+            "From": "whatsapp:+1234567890",
+            "Body": "Test message",
+            "MessageSid": "SM_UNCONFIGURED_TEST",
+        }
+        response = client.post("/webhook/wa", data=form_data)
+        assert response.status_code == 403
+
+    settings.DEBUG = True
+    settings.TWILIO_AUTH_TOKEN = original_token
+
+
+def test_slack_signature_check_fails_closed_when_unconfigured():
+    """If SLACK_SIGNING_SECRET is unset outside DEBUG, requests must be rejected, not passed through."""
+    settings = get_settings()
+    settings.DEBUG = False
+    original_secret = settings.SLACK_SIGNING_SECRET
+    settings.SLACK_SIGNING_SECRET = ""
+
+    with TestClient(app) as client:
+        payload = {"type": "url_verification", "challenge": "challenge_token"}
+        response = client.post("/webhook/slack", json=payload)
+        assert response.status_code == 403
+
+    settings.DEBUG = True
+    settings.SLACK_SIGNING_SECRET = original_secret
+
+
+def test_slack_event_dedup_on_retry():
+    """A Slack event delivered twice with the same event_id should only be processed once."""
+    with TestClient(app) as client:
+        from app.db import engine
+        with Session(engine) as session:
+            ticket = Ticket(
+                wa_number="whatsapp:+1987654321",
+                wa_message_sid="SM_DEDUP_TEST",
+                slack_channel="C12345678",
+                slack_ts="1720000000.123456",
+                title="Dedup Test",
+                status="open",
+            )
+            session.add(ticket)
+            session.commit()
+
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev_DUPLICATE_001",
+            "event": {
+                "type": "message",
+                "user": "U12345678",
+                "text": "Resolved, all set.",
+                "thread_ts": "1720000000.123456",
+                "ts": "1720000005.654321",
+                "channel": "C12345678",
+            },
+        }
+        first = client.post("/webhook/slack", json=payload)
+        second = client.post("/webhook/slack", json=payload)
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+        from app.models import SlackEvent
+        with Session(engine) as session:
+            events = session.exec(
+                select(SlackEvent).where(SlackEvent.event_id == "Ev_DUPLICATE_001")
+            ).all()
+            assert len(events) == 1
+
+
+def test_format_ticket_history_includes_priority_category_description():
+    """format_ticket_history should surface priority/category/description, not just title."""
+    from app.db import format_ticket_history
+
+    ticket = Ticket(
+        wa_number="whatsapp:+1111111111",
+        wa_message_sid="SM_HISTORY_TEST",
+        title="Cannot log in",
+        description="User locked out after password reset.",
+        priority="high",
+        category="access",
+        status="open",
+    )
+    formatted = format_ticket_history([ticket])
+    assert "Cannot log in" in formatted
+    assert "Priority: high" in formatted
+    assert "Category: access" in formatted
+    assert "User locked out after password reset." in formatted
+
+
+def test_format_ticket_history_empty():
+    """No prior tickets should produce a clear 'new user' message, not blow up on None fields."""
+    from app.db import format_ticket_history
+
+    assert format_ticket_history([]) == "No prior tickets found (new user)."
